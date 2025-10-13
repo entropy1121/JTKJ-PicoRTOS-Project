@@ -533,7 +533,13 @@ void init_veml6030() {
 // Ligt in LUX
 // Note: sampling time should be > IT -> in this case it has been 100ms by defintion. 
 uint32_t veml6030_read_light() {
-
+    uint8_t txBuffer[1];
+    uint8_t rxBuffer[2];
+    txBuffer[0] = 0x04;
+    i2c_write_blocking(i2c_default, VEML6030_I2C_ADDR, txBuffer, 1, true);
+    i2c_read_blocking(i2c_default, VEML6030_I2C_ADDR, rxBuffer, 2, false);
+    int16_t result = (rxBuffer[1] << 8) | rxBuffer[0];
+    float luxVal_uncorrected = result * 0.9216f;
     // Exercise 2: In order to get the luminance we need to read the value of the VEML6030_ALS_REG (see VEML6030 datasheet)
     //            Use functions i2c_write_blocking and i2_read_blocking to collect luminance data.
     //            These functions are found in the Pico SDK:
@@ -541,7 +547,7 @@ uint32_t veml6030_read_light() {
     //            The i2c that you must use is i2c_default.  
     //            from the sensor. Make necessary bitwise operation to store the results in a register of 16 bits.
     //            Multiply the value by the adequate value considering Integration Time of 100 ms and Gain of 1/8
-    //            using data of page 5 of VEML6030 design application document: https://www.vishay.com/docs/84367/designingveml6030.pdf
+    //            using data of page 5 of VEML6030 datasheet.
     //            Finally, store the value in the variable luxVal_uncorrected.
     //
     // Tehtävä 2: Saadaksemme luminanssin meidän tulee lukea VEML6030_ALS_REG -rekisterin arvo (katso VEML6030-datalehti).
@@ -551,9 +557,9 @@ uint32_t veml6030_read_light() {
     //            Käytettävä i2c-väylä on i2c_default.
     //            Tee tarvittavat bittikohtaiset operaatiot tallettaksesi tuloksen 16-bittiseen rekisteriin.
     //            Kerro arvo sopivalla kertoimella huomioiden 100 ms integraatioaika ja vahvistus 1/8
-    //            käyttäen VEML6030-sovellussuunnitteluasiakirjan sivun 5 tietoja:https://www.vishay.com/docs/84367/designingveml6030.pdf
+    //            käyttäen VEML6030-datalehden sivun 5 tietoja.
     //            Lopuksi tallenna arvo muuttujaan luxVal_uncorrected.
-  
+    
     uint32_t luxVal_uncorrected = 0; 
     if (luxVal_uncorrected>1000){
         // Polynomial is pulled from pg 10 of the datasheet. 
