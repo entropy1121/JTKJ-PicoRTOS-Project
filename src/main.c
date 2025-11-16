@@ -1,8 +1,10 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <math.h> // For roundf, fabs
 
 #include <pico/stdlib.h>
+#include <hardware/gpio.h> // For Button IRQ handling
 
 #include <FreeRTOS.h>
 #include <queue.h>
@@ -12,186 +14,187 @@
 
 // Exercise 4. Include the libraries necessaries to use the usb-serial-debug, and tinyusb
 // Tehtävä 4 . Lisää usb-serial-debugin ja tinyusbin käyttämiseen tarvittavat kirjastot.
-
+#include "bsp/board.h"
+#include "tusb_config.h"
+#include "helper.h" 
 
 
 #define DEFAULT_STACK_SIZE 2048
 #define CDC_ITF_TX      1
 
-
-// Tehtävä 3: Tilakoneen esittely Add missing states.
-// Exercise 3: Definition of the state machine. Add missing states.
-enum state { WAITING=1};
+// ===============================================
+// Tehtävä 3: Tilakoneen esittely ja Globaalit muuttujat
+// Exercise 3: Definition of the state machine and Global variables
+// ===============================================
+enum state { WAITING=1, READING_IMU, PROCESS_POSITION, SENDING_SYMBOL };
 enum state programState = WAITING;
 
-// Tehtävä 3: Valoisuuden globaali muuttuja
-// Exercise 3: Global variable for ambient light
-uint32_t ambientLight;
+// Globaali synkronointimekanismi: FreeRTOS jono merkkien välittämiseksi tehtävien välillä
+// Global synchronization mechanism: FreeRTOS queue for passing symbols between tasks
+QueueHandle_t morse_symbol_queue;
 
+// Globaalit muuttujat IMU-datan tallentamiseen
+// Global variables for storing IMU data
+float acc_x, acc_y, acc_z; 
+const float THRESHOLD = 0.8f; // IMU detection threshold (approx. 0.8g)
+
+
+// ===============================================
+// Tehtävä 1: Painikkeen keskeytyskäsittelijä (SW1)
+// Exercise 1: Button interrupt handler (SW1)
+// ===============================================
 static void btn_fxn(uint gpio, uint32_t eventMask) {
-    // Tehtävä 1: Vaihda LEDin tila.
-    //            Tarkista SDK, ja jos et löydä vastaavaa funktiota, sinun täytyy toteuttaa se itse.
-    // Exercise 1: Toggle the LED. 
-    //             Check the SDK and if you do not find a function you would need to implement it yourself. 
-    toggle_led();
-}
-
-static void sensor_task(void *arg){
-    (void)arg;
-    // Tehtävä 2: Alusta valoisuusanturi. Etsi SDK-dokumentaatiosta sopiva funktio.
-    // Exercise 2: Init the light sensor. Find in the SDK documentation the adequate function.
-   
-    for(;;){
+    // Tehtävä 1: Lähetä välilyönti painettaessa.
+    // Exercise 1: Send a space when pressed. 
+    if (gpio == TKJ_HAT_SW1_PIN && (eventMask & GPIO_IRQ_EDGE_FALL)) {
+        char symbol = ' ';
+        // Lähetä välilyönti jonoon, jotta print_task voi sen lähettää
+        // Send the space to the queue so print_task can send it
+        xQueueSendFromISR(morse_symbol_queue, &symbol, NULL);
         
-        // Tehtävä 2: Muokkaa tästä eteenpäin sovelluskoodilla. Kommentoi seuraava rivi.
-        //             
-        // Exercise 2: Modify with application code here. Comment following line.
-        //             Read sensor data and print it out as string; 
-        tight_loop_contents(); 
-
-
-   
-
-
-        // Tehtävä 3:  Muokkaa aiemmin Tehtävässä 2 tehtyä koodia ylempänä.
-        //             Jos olet oikeassa tilassa, tallenna anturin arvo tulostamisen sijaan
-        //             globaaliin muuttujaan.
-        //             Sen jälkeen muuta tilaa.
-        // Exercise 3: Modify previous code done for Exercise 2, in previous lines. 
-        //             If you are in adequate state, instead of printing save the sensor value 
-        //             into the global variable.
-        //             After that, modify state
-
-
-
-
-
-        
-        // Exercise 2. Just for sanity check. Please, comment this out
-        // Tehtävä 2: Just for sanity check. Please, comment this out
-        printf("sensorTask\n");
-
-        // Do not remove this
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        // Välkyttää LEDiä vahvistukseksi
+        toggle_led(); 
     }
 }
 
-static void print_task(void *arg){
+
+// ===============================================
+// Tehtävä 2: Anturitehtävä (IMU lukeminen ja tilan tunnistus)
+// Exercise 2: Sensor Task (IMU reading and state detection)
+// ===============================================
+static void sensor_task(void *arg){
     (void)arg;
+    
+    // Tehtävä 2: Alusta IMU anturi
+    // Exercise 2: Initialize IMU sensor
+    
+    // init_hat_sdk() in main() already calls init_i2c_default()
+    if (init_ICM42670() != 0) {
+        printf("IMU init failed!\n");
+        // Älä jatka jos init epäonnistui
+        vTaskDelete(NULL); 
+    }
+    ICM42670_start_with_default_values();
+    
+    // Tila- ja lukulogiikka
+    TickType_t xLastWakeTime;
+    const TickType_t xFrequency = pdMS_TO_TICKS(100); // 100ms update rate (10Hz)
+    xLastWakeTime = xTaskGetTickCount();
     
     while(1){
         
-        // Tehtävä 3: Kun tila on oikea, tulosta sensoridata merkkijonossa debug-ikkunaan
-        //            Muista tilamuutos
-        //            Älä unohda kommentoida seuraavaa koodiriviä.
-        // Exercise 3: Print out sensor data as string to debug window if the state is correct
-        //             Remember to modify state
-        //             Do not forget to comment next line of code.
-        tight_loop_contents();
+        programState = READING_IMU;
+        // Lukee IMU-tiedot. Huomaa: ICM42670_read_sensor_data palauttaa myös Gyro-tiedot.
+        ICM42670_read_sensor_data(&acc_x, &acc_y, &acc_z, NULL, NULL, NULL, NULL);
+
+        programState = PROCESS_POSITION;
+        char detected_symbol = '\0';
         
-
-
+        // Tunnistus: Piste (Dot): Laite tasaisesti pöydällä (Z-akseli alas)
+        // Detection: Dot (.): Device flat on table (Z-axis down, approx -1g)
+        if (acc_z < -THRESHOLD) {
+            detected_symbol = '.';
+            toggle_red_led(); // Välkyttää punaista LEDiä pisteelle
+        }
+        // Tunnistus: Viiva (Dash): Laite pystyssä, Y-akseli ylös
+        // Detection: Dash (-): Device on its side (Y-axis up, approx +1g)
+        else if (acc_y > THRESHOLD) {
+            detected_symbol = '-';
+            toggle_green_led(); // Välkyttää vihreää LEDiä viivalle
+        }
         
-        // Exercise 4. Use the usb_serial_print() instead of printf or similar in the previous line.
-        //             Check the rest of the code that you do not have printf (substitute them by usb_serial_print())
-        //             Use the TinyUSB library to send data through the other serial port (CDC 1).
-        //             You can use the functions at https://github.com/hathach/tinyusb/blob/master/src/class/cdc/cdc_device.h
-        //             You can find an example at hello_dual_cdc
-        //             The data written using this should be provided using csv
-        //             timestamp, luminance
-        // Tehtävä 4. Käytä usb_serial_print()-funktiota printf:n tai vastaavien sijaan edellisellä rivillä.
-        //            Tarkista myös muu koodi ja varmista, ettei siinä ole printf-kutsuja
-        //            (korvaa ne usb_serial_print()-funktiolla).
-        //            Käytä TinyUSB-kirjastoa datan lähettämiseen toisen sarjaportin (CDC 1) kautta.
-        //            Voit käyttää funktioita: https://github.com/hathach/tinyusb/blob/master/src/class/cdc/cdc_device.h
-        //            Esimerkki löytyy hello_dual_cdc-projektista.
-        //            Tällä menetelmällä kirjoitettu data tulee antaa CSV-muodossa:
-        //            timestamp, luminance
+        // Lähetä symboli (jos tunnistettu) print_taskille jonon kautta
+        // Send the symbol (if detected) to print_task via the queue
+        if (detected_symbol != '\0') {
+            programState = SENDING_SYMBOL;
+            // Lähetä jonoon. Älä estä: Jos jono on täynnä, vain ohita tämä symboli
+            // Send to queue. Don't block: If the queue is full, just skip this symbol.
+            xQueueSend(morse_symbol_queue, &detected_symbol, 0); 
+            
+            // Estä kaksoislähetys antamalla käyttäjälle aikaa liikuttaa laitetta
+            // Prevent double-send by giving the user time to move the device.
+            vTaskDelay(pdMS_TO_TICKS(500)); 
+            
+            programState = WAITING; // Palaa odottamaan
+        } else {
+            programState = WAITING;
+        }
 
-
-
-
-        // Exercise 3. Just for sanity check. Please, comment this out
-        // Tehtävä 3: Just for sanity check. Please, comment this out
-        printf("printTask\n");
-        
-        // Do not remove this
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        // Odota seuraavaa sykliä
+        vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
 }
 
 
-// Exercise 4: Uncomment the following line to activate the TinyUSB library.  
-// Tehtävä 4:  Poista seuraavan rivin kommentointi aktivoidaksesi TinyUSB-kirjaston. 
-
-/*
-static void usbTask(void *arg) {
+// ===============================================
+// Tehtävä 2: Tulostustehtävä (Sarjaporttiviestintä)
+// Exercise 2: Print Task (Serial Communication)
+// ===============================================
+static void print_task(void *arg){
     (void)arg;
-    while (1) {
-        tud_task();              // With FreeRTOS wait for events
-                                 // Do not add vTaskDelay. 
+    char symbol;
+    
+    while(1){
+        // Odota, kunnes jono on vastaanottanut merkin sensor_taskilta
+        // Wait until the queue has received a character from sensor_task
+        if (xQueueReceive(morse_symbol_queue, &symbol, portMAX_DELAY) == pdPASS) {
+            // Lähetä merkki ulkoiseen laitteeseen (työasemaan)
+            // Send the character to the external device (workstation)
+            
+            // NOTE: usb_serial_print() handles the serial transmission
+            usb_serial_print("%c", symbol);
+            
+            // Näytä konsolissa debuggausta varten (ei lähetetä sarjaportin kautta)
+            printf("Sent Symbol: %c\n", symbol); 
+        }
     }
-}*/
+}
 
+
+// ===============================================
+// Pääfunktio
+// ===============================================
 int main() {
-
-    // Exercise 4: Comment the statement stdio_init_all(); 
-    //             Instead, add AT THE END OF MAIN (before vTaskStartScheduler();) adequate statements to enable the TinyUSB library and the usb-serial-debug.
-    //             You can see hello_dual_cdc for help
-    //             In CMakeLists.txt add the cfg-dual-usbcdc
-    //             In CMakeLists.txt deactivate pico_enable_stdio_usb
-    // Tehtävä 4:  Kommentoi lause stdio_init_all();
-    //             Sen sijaan lisää MAIN LOPPUUN (ennen vTaskStartScheduler();) tarvittavat komennot aktivoidaksesi TinyUSB-kirjaston ja usb-serial-debugin.
-    //             Voit katsoa apua esimerkistä hello_dual_cdc.
-    //             Lisää CMakeLists.txt-tiedostoon cfg-dual-usbcdc
-    //             Poista CMakeLists.txt-tiedostosta käytöstä pico_enable_stdio_usb
-
-    stdio_init_all();
-
-    // Uncomment this lines if you want to wait till the serial monitor is connected
-    /*while (!stdio_usb_connected()){
-        sleep_ms(10);
-    }*/ 
     
-    init_hat_sdk();
-    sleep_ms(300); //Wait some time so initialization of USB and hat is done.
+    // Alusta TKJ-HAT
+    init_hat_sdk(); 
 
-    // Exercise 1: Initialize the button and the led and define an register the corresponding interrupton.
-    //             Interruption handler is defined up as btn_fxn
-    // Tehtävä 1:  Alusta painike ja LEd ja rekisteröi vastaava keskeytys.
-    //             Keskeytyskäsittelijä on määritelty yläpuolella nimellä btn_fxn
-    
-    init_button2();
+    // Tehtävä 4: Estä pico_enable_stdio_usb:n käyttö ja alusta TinyUSB erikseen
+    // Exercise 4: Prevent the use of pico_enable_stdio_usb and initialize TinyUSB separately
+    // Huom: Varmista, että kommentoit pico_enable_stdio_usb CMakeLists.txt:ssä!
+    board_init();
+    tusb_init();
+
+    // Tehtävä 1: Alusta LED ja painike (SW1)
+    // Exercise 1: Initialize LED and Button (SW1)
     init_led();
-
-    gpio_set_irq_enabled_with_callback(BUTTON2, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
-
+    init_button1(); // SW1
     
+    // Rekisteröi keskeytyskäsittelijä
+    // Register the interrupt handler
+    gpio_set_irq_enabled_with_callback(TKJ_HAT_SW1_PIN, 
+                                      GPIO_IRQ_EDGE_FALL, 
+                                      true, 
+                                      &btn_fxn);
 
 
-    
-    
-    TaskHandle_t hSensorTask, hPrintTask, hUSB = NULL;
-
-    // Exercise 4: Uncomment this xTaskCreate to create the task that enables dual USB communication.
-    // Tehtävä 4: Poista tämän xTaskCreate-rivin kommentointi luodaksesi tehtävän,
-    // joka mahdollistaa kaksikanavaisen USB-viestinnän.
-
-    /*
-    xTaskCreate(usbTask, "usb", 2048, NULL, 3, &hUSB);
-    #if (configNUMBER_OF_CORES > 1)
-        vTaskCoreAffinitySet(hUSB, 1u << 0);
-    #endif
-    */
+    // Luo synkronointijono (kapasiteetti 10 merkkiä)
+    // Create the synchronization queue (capacity 10 characters)
+    morse_symbol_queue = xQueueCreate(10, sizeof(char));
+    if (morse_symbol_queue == NULL) {
+        printf("Queue creation failed!\n");
+        return 0;
+    }
 
 
+    // Luo tehtävät xTaskCreate:llä
     // Create the tasks with xTaskCreate
     BaseType_t result = xTaskCreate(sensor_task, // (en) Task function
                 "sensor",                        // (en) Name of the task 
                 DEFAULT_STACK_SIZE,              // (en) Size of the stack for this task (in words). Generally 1024 or 2048
                 NULL,                            // (en) Arguments of the task 
                 2,                               // (en) Priority of this task
-                &hSensorTask);                   // (en) A handle to control the execution of this task
+                NULL);                           // (en) A handle to control the execution of this task
 
     if(result != pdPASS) {
         printf("Sensor task creation failed\n");
@@ -202,17 +205,31 @@ int main() {
                 DEFAULT_STACK_SIZE,   // (en) Size of the stack for this task (in words). Generally 1024 or 2048
                 NULL,                 // (en) Arguments of the task 
                 2,                    // (en) Priority of this task
-                &hPrintTask);         // (en) A handle to control the execution of this task
+                NULL);                // (en) A handle to control the execution of this task
 
     if(result != pdPASS) {
         printf("Print Task creation failed\n");
         return 0;
     }
+    
+    // TinyUSB Task (needed when not using stdio_usb)
+    result = xTaskCreate(usb_task, // (en) Task function
+                "usb",             // (en) Name of the task 
+                2048,              // (en) Size of the stack for this task (in words).
+                NULL,              // (en) Arguments of the task 
+                3,                 // (en) Priority of this task (higher priority is good for USB)
+                NULL);             // (en) A handle to control the execution of this task
 
-    // Start the scheduler (never returns)
+    if(result != pdPASS) {
+        printf("USB Task creation failed\n");
+        return 0;
+    }
+    
+    
+    // Aloita FreeRTOS-ajastin (ei koskaan palaa)
+    // Start the scheduler (never returns)...
     vTaskStartScheduler();
     
-    // Never reach this line.
+    // Tänne ei pitäisi päätyä
     return 0;
 }
-
