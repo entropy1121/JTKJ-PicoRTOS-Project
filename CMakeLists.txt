@@ -112,8 +112,11 @@ add_subdirectory(examples/hello_serial_bidirectional_client)
 # If you add the headers in a different directory, you should use: target_include_directories
 add_executable(${MAIN_TARGET}
     src/main.c
+    src/morse_data.c
 )
-
+target_include_directories(${MAIN_TARGET} PUBLIC 
+    ${CMAKE_CURRENT_LIST_DIR}/include
+)
 # Links. Add all libraries that application is using. It must at least use the pico_stdlib
 # In addition, for the course project you are using at least:
 #   * FreeRTOS-Kernel -> FreeRTOS functions: tasks queues, timers, lists ...
@@ -127,6 +130,8 @@ target_link_libraries(${MAIN_TARGET}
         FreeRTOS-Kernel-Heap4
         TKJHAT_SDK
         usb_serial_debug
+       
+
 )
 
 # Include libraries necessaries to control the WiFi. If you are using the internal pico LED in W model, it is also 
@@ -136,7 +141,7 @@ if (PICO_CYW43_SUPPORTED)
 endif()
 
 #Support for stdio (printf, fwrite, puts...) via usb or UART. 
-#pico_enable_stdio_usb(${MAIN_TARGET} 1)
+pico_enable_stdio_usb(${MAIN_TARGET} 1)
 pico_enable_stdio_uart(${MAIN_TARGET} 0)
 
 # Create different output files: 

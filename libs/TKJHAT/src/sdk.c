@@ -539,7 +539,7 @@ uint32_t veml6030_read_light() {
     i2c_write_blocking(i2c_default, VEML6030_I2C_ADDR, txBuffer, 1, true);
     i2c_read_blocking(i2c_default, VEML6030_I2C_ADDR, rxBuffer, 2, false);
     int16_t result = (rxBuffer[1] << 8) | rxBuffer[0];
-    float luxVal_uncorrected = result * 0.9216f;
+    uint32_t luxVal_uncorrected = result * 0.9216f;
     // Exercise 2: In order to get the luminance we need to read the value of the VEML6030_ALS_REG (see VEML6030 datasheet)
     //            Use functions i2c_write_blocking and i2_read_blocking to collect luminance data.
     //            These functions are found in the Pico SDK:
@@ -560,7 +560,7 @@ uint32_t veml6030_read_light() {
     //            käyttäen VEML6030-datalehden sivun 5 tietoja.
     //            Lopuksi tallenna arvo muuttujaan luxVal_uncorrected.
     
-    uint32_t luxVal_uncorrected = 0; 
+    
     if (luxVal_uncorrected>1000){
         // Polynomial is pulled from pg 10 of the datasheet. 
         // See https://github.com/sparkfun/SparkFun_Ambient_Light_Sensor_Arduino_Library/blob/efde0817bd6857863067bd1653a2cfafe6c68732/src/SparkFun_VEML6030_Ambient_Light_Sensor.cpp#L409
