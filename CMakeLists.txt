@@ -98,7 +98,7 @@ add_subdirectory(examples/hat_imu_ex)
 add_subdirectory(examples/hat_imu_cdc_ex)
 add_subdirectory(examples/hello_serial_client)
 add_subdirectory(examples/hello_serial_bidirectional_client)
-#add_subdirectory(examples/hat_imu_display)
+
 #
 # You can edit it if you want to add new examples
 # ==============================================================================================
@@ -112,11 +112,8 @@ add_subdirectory(examples/hello_serial_bidirectional_client)
 # If you add the headers in a different directory, you should use: target_include_directories
 add_executable(${MAIN_TARGET}
     src/main.c
-    src/morse_data.c
 )
-target_include_directories(${MAIN_TARGET} PUBLIC 
-    ${CMAKE_CURRENT_LIST_DIR}/include
-)
+
 # Links. Add all libraries that application is using. It must at least use the pico_stdlib
 # In addition, for the course project you are using at least:
 #   * FreeRTOS-Kernel -> FreeRTOS functions: tasks queues, timers, lists ...
@@ -129,9 +126,6 @@ target_link_libraries(${MAIN_TARGET}
         FreeRTOS-Kernel
         FreeRTOS-Kernel-Heap4
         TKJHAT_SDK
-        usb_serial_debug
-       
-
 )
 
 # Include libraries necessaries to control the WiFi. If you are using the internal pico LED in W model, it is also 

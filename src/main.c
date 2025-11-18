@@ -1,191 +1,237 @@
+/*
+ * Course Project: Morse Code Transmitter (Tier 1)
+ * * ==============================================================================
+ * AI TOOL USAGE DECLARATION (MANDATORY AS PER COURSE RULES)
+ * ==============================================================================
+ * AI Tool Used: Google Gemini (Model 1.5 Pro / 2.0 Flash)
+ * * Prompt Used: 
+ * "Help me write a FreeRTOS program for Raspberry Pi Pico W using C language. 
+ * It needs two tasks: one to read an IMU sensor (ICM42670) triggered by buttons, 
+ * and another to print Morse code to USB serial. The protocol requires specific 
+ * spacing for dots, dashes, and message endings. Use the provided tkjhat/sdk.h."
+ * * Modifications made by Student:
+ * 1. Refactored the code structure to match the course's "task-based" architecture.
+ * 2. Integrated specific TKJHAT SDK functions (ICM42670, GPIO) as per lab exercises.
+ * 3. Implemented a button logic split: SW2 for typing, SW1 for spacing/enter.
+ * 4. Added interrupt safety mechanisms (FromISR functions) as emphasized in lectures.
+ * 5. Tuned stack sizes and delays to prevent system starvation.
+ * ==============================================================================
+ */
 
 #include <stdio.h>
-#include <string.h>
-
+#include <math.h> 
 #include <pico/stdlib.h>
-#include <pico/time.h> // 用于获取时间戳
 
+// FreeRTOS Includes
 #include <FreeRTOS.h>
 #include <queue.h>
 #include <task.h>
+#include <semphr.h>
 
+// Course SDK Includes
 #include "tkjhat/sdk.h"
 
-// 引入双串口调试和 TinyUSB 库
+// --- Configuration Constants ---
+#define STACK_SIZE      1024   // Adjusted to accommodate printf buffer
+#define QUEUE_LEN       20     // Buffer size for outgoing characters
+#define TILT_THRESHOLD  0.7f   // 0.7g threshold for orientation detection
+// 定义控制命令的常量，这样代码更易读
+#define CMD_DOT       '.'   // 点
+#define CMD_DASH      '-'   // 划
+#define CMD_SPACE     ' '   // 字母间隔
+#define CMD_END_MSG   '\n'  // 消息结束 (你可以用 '\n'，也可以用 'E'，或者 0xFF)
 
-#include "bsp/board.h"
-#include "tusb.h"
+// --- Global Variables (RTOS Objects) ---
+QueueHandle_t msg_queue;
+SemaphoreHandle_t btn_sem;
+volatile int active_btn_id = 0; // 1 for SW1, 2 for SW2
 
-// 引入摩尔斯电码转换头文件 (你需要创建 morse_data.h 和 morse_data.c)
-#include "morse_data.h"
-
-
-#define DEFAULT_STACK_SIZE 2048
-#define CDC_ITF_TX      1 // CDC 接口 1 用于 CSV 数据输出
-
-
-// 完善状态机定义：等待、读取、发送
-enum state { 
-    WAITING=1,      // 等待按钮触发
-    READING_LIGHT,  // 正在读取传感器数据
-    SENDING_DATA    // 正在处理并发送数据
-};
-enum state programState = WAITING;
-
-// 全局变量：用于存储光照值 (使用 float 类型与 sdk.c 中的 get_light_level 匹配)
-float ambientLight;
-
-// 全局变量：用于跟踪 LED 状态 (假设 BOARD_LED_INDEX = 0)
-bool led_is_on = false;
-#define BOARD_LED_INDEX 0 
-
-// 按钮中断处理函数
-static void btn_fxn(uint gpio, uint32_t eventMask) {
-    // 1. 切换 LED 状态 (使用 sdk.c 中找到的 set_led_level 函数)
-    led_is_on = !led_is_on;
-    set_led_level(BOARD_LED_INDEX, led_is_on); 
-
-    // 2. 切换程序状态，从 WAITING 切换到 READING_LIGHT
-    if (programState == WAITING) {
-        programState = READING_LIGHT;
+// --- Interrupt Service Routine (ISR) ---
+// Handles button presses efficiently as per "Interrupts" lecture
+static void gpio_callback(uint gpio, uint32_t events) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    
+    // Identify which button triggered the interrupt
+    if (gpio == SW2_PIN) {
+        active_btn_id = 2; // Typing Action
+        xSemaphoreGiveFromISR(btn_sem, &xHigherPriorityTaskWoken);
+    } 
+    else if (gpio == SW1_PIN) {
+        active_btn_id = 1; // Control Action (Space/Enter)
+        xSemaphoreGiveFromISR(btn_sem, &xHigherPriorityTaskWoken);
     }
+
+    // Force context switch if a high priority task was woken
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-// 传感器任务：负责数据采集和状态切换
-static void sensor_task(void *arg){
+// --- Helper Function: IMU Logic ---
+// Reads sensor and returns current symbol based on position
+// Returns 0 if error or indeterminate
+char get_symbol_from_imu(int button_id) {
+    float ax, ay, az, gx, gy, gz, temp;
+    
+    // Read raw data using SDK
+    if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp) != 0) {
+        printf("Error: Sensor Read Failed\n");
+        return 0;
+    }
+
+    // Determine orientation (Simple State Logic)
+    // Z-axis dominant (> 0.7g) -> Flat
+    bool is_flat = (fabsf(az) > TILT_THRESHOLD);
+    // X or Y-axis dominant (> 0.7g) -> Tilted
+    bool is_tilted = (fabsf(ax) > TILT_THRESHOLD || fabsf(ay) > TILT_THRESHOLD);
+
+    char symbol = 0;
+
+    // Logic Table:
+    // SW2 (Type)    + Flat   = Dot (.)
+    // SW2 (Type)    + Tilted = Dash (-)
+    // SW1 (Control) + Flat   = Char Space ( )
+    // SW1 (Control) + Tilted = End Message (E)
+    
+    if (button_id == 2) { // Typing
+        if (is_flat) {
+            symbol = '.';
+            blink_led(1); // Feedback
+        } else if (is_tilted) {
+            symbol = '-';
+            // Long flash for Dash
+            set_led_status(true);
+            vTaskDelay(pdMS_TO_TICKS(200)); // Blocking delay inside logic is okay here
+            set_led_status(false);
+        }
+    } 
+    else if (button_id == 1) { // Control
+        if (is_flat) {
+            symbol = CMD_SPACE; // 发送空格命令
+            blink_led(2);
+        } else if (is_tilted) {
+            symbol = CMD_END_MSG; // 发送结束命令 (原本是 'E')
+            blink_led(3);
+        }
+    }
+    
+    return symbol;
+}
+
+// --- Task 1: Sensor Task ---
+// Priority: 2 (High) - Handles logic and hardware interaction
+static void sensor_task(void *arg) {
     (void)arg;
     
-    // 初始化光照传感器 (使用 sdk.c 中找到的 init_light_sensor 函数)
-    //init_light_sensor(); 
-   
-    for(;;){
-        
-        // 适当延时，防止过度占用 CPU
-        vTaskDelay(pdMS_TO_TICKS(100)); 
-
-        if (programState == READING_LIGHT) {
-            
-            // 读取传感器数据并保存到全局变量 (使用 sdk.c 中找到的 get_light_level 函数)
-            get_light_level(&ambientLight); 
-            
-            // 完成读取后，切换状态到发送
-            programState = SENDING_DATA;
-        }
-
-        // 移除原始的调试打印和长延时
-        // printf("sensorTask\n");
-        // vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-
-// 打印任务：负责数据处理和串口输出
-static void print_task(void *arg){
-    (void)arg;
-    char csv_buffer[128];
-    char morse_output[128];
-    
-    while(1){
-        
-        // 适当延时
-        vTaskDelay(pdMS_TO_TICKS(100)); 
-
-        if (programState == SENDING_DATA) {
-            
-            // 1. 摩尔斯电码输出 (Debug 串口)
-            // 将浮点数转换为整数部分进行摩尔斯编码 (假设 morse_encode 函数可用)
-            uint32_t light_int = (uint32_t)ambientLight; 
-            char *morse_code = morse_encode(light_int); 
-            
-            // 使用 usb_serial_print 输出摩尔斯电码
-            snprintf(morse_output, sizeof(morse_output), "光照值: %.2f Lux -> 摩尔斯码: %s\r\n", ambientLight, morse_code);
-            usb_serial_print(morse_output);
-
-            // 2. CSV 数据输出 (CDC 1 接口)
-            uint64_t timestamp = time_us_64();
-            // 格式: timestamp, luminance
-            snprintf(csv_buffer, sizeof(csv_buffer), "%llu, %.2f\r\n", timestamp, ambientLight);
-
-            // 通过 CDC 1 接口发送 CSV 数据
-            if (tud_cdc_n_connected(CDC_ITF_TX)) {
-                tud_cdc_n_write(CDC_ITF_TX, csv_buffer, strlen(csv_buffer));
-                tud_cdc_n_write_flush(CDC_ITF_TX);
-            }
-
-            // 完成发送后，切换状态回 WAITING
-            programState = WAITING; 
-        }
-
-        // 移除原始的调试打印和长延时
-        // printf("printTask\n");
-        // vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-
-
-// TinyUSB 任务：处理 USB 通信堆栈
-static void usbTask(void *arg) {
-    (void)arg;
     while (1) {
-        tud_task();              // 运行 TinyUSB 堆栈
+        // Block until interrupt gives semaphore
+        if (xSemaphoreTake(btn_sem, portMAX_DELAY) == pdTRUE) {
+            
+            // Debounce: Wait for signal to settle
+            vTaskDelay(pdMS_TO_TICKS(50));
+
+            // Verify button is still pressed (simple debounce check)
+            uint target_pin = (active_btn_id == 1) ? SW1_PIN : SW2_PIN;
+            
+            if (gpio_get(target_pin)) {
+                char symbol = get_symbol_from_imu(active_btn_id);
+                
+                if (symbol != 0) {
+                    xQueueSend(msg_queue, &symbol, 0);
+                }
+            }
+            
+            // Rate limit to prevent flooding
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
     }
 }
 
-int main() {
+// --- Task 2: USB Print Task ---
+// Priority: 1 (Low) - Consumes data from queue and prints via USB
+static void print_task(void *arg) {
+    (void)arg;
+    char received_char;
 
-    // 遵循练习要求，注释掉 stdio_init_all(); 
-    // stdio_init_all();
+    while (1) {
+        // Block until queue has data
+        if (xQueueReceive(msg_queue, &received_char, portMAX_DELAY) == pdTRUE) {
+            
+            // Protocol handling (as per Project Specifications)
+            switch (received_char) {
+        case CMD_DOT:       // 原本是 case '.':
+            printf("."); 
+            break;
+        case CMD_DASH:      // 原本是 case '-':
+            printf("-"); 
+            break;
+        case CMD_SPACE:     // 原本是 case ' ':
+            printf(" "); 
+            break;
+        case CMD_END_MSG:   // 原本是 case 'E':
+            // 这里才是真正发给电脑的协议内容
+            // 只要收到 CMD_END_MSG，就打印协议规定的结尾符
+            printf("  \n"); 
+            break;
+            }
+            // Ensure data is sent immediately over USB
+            fflush(stdout);
+        }
+    }
+}
 
+// --- Initialization Helper ---
+void init_components(void) {
+    // 1. Initialize Hat SDK (I2C, etc.)
     init_hat_sdk();
-    sleep_ms(300); 
+    sleep_ms(100); // Wait for hardware to settle
 
-    // 初始化 LED 和按钮 (使用你模板中的函数名)
-    // 注意：init_led/init_button2 不是 sdk.c 中的函数名，但保留它们以匹配模板结构
-    // 假设它们能正确初始化引脚
+    // 2. Initialize Peripherals
     init_led();
-    init_button2(); 
-    
-    // 注册中断处理函数
-    gpio_set_irq_enabled_with_callback(BUTTON2, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
+    init_sw1(); 
+    init_sw2();
 
-    
-    TaskHandle_t hSensorTask, hPrintTask, hUSB = NULL;
-
-    // 创建 usbTask 任务以启用双串口通信
-    xTaskCreate(usbTask, "usb", 2048, NULL, 3, &hUSB);
-    #if (configNUMBER_OF_CORES > 1)
-        vTaskCoreAffinitySet(hUSB, 1u << 0);
-    #endif
-    
-
-    // 创建 sensor_task 任务
-    BaseType_t result = xTaskCreate(sensor_task, // (en) Task function
-                "sensor",                        // (en) Name of the task 
-                DEFAULT_STACK_SIZE,              // (en) Size of the stack for this task (in words). Generally 1024 or 2048
-                NULL,                            // (en) Arguments of the task 
-                2,                               // (en) Priority of this task
-                &hSensorTask);                   // (en) A handle to control the execution of this task
-
-    if(result != pdPASS) {
-        printf("Sensor task creation failed\n");
-        return 0;
+    // 3. Initialize IMU with error handling
+    int rc = init_ICM42670();
+    if (rc == 0) {
+        ICM42670_start_with_default_values();
+    } else {
+        printf("Warning: IMU Init Failed (Error %d)\n", rc);
     }
+}
+
+// --- Main Function ---
+int main() {
+    // Initialize stdio for USB communication
+    stdio_init_all();
     
-    // 创建 print_task 任务
-    result = xTaskCreate(print_task,  // (en) Task function
-                "print",              // (en) Name of the task 
-                DEFAULT_STACK_SIZE,   // (en) Size of the stack for this task (in words). Generally 1024 or 2048
-                NULL,                 // (en) Arguments of the task 
-                2,                    // (en) Priority of this task
-                &hPrintTask);         // (en) A handle to control the execution of this task
+    // Optional: Wait for USB connection (helpful for debugging)
+    // sleep_ms(2000); 
+    
+    printf("System Starting...\n");
 
-    if(result != pdPASS) {
-        printf("Print Task creation failed\n");
-        return 0;
-    }
+    // Initialize hardware
+    init_components();
 
-    // Start the scheduler (never returns)
+    // Create RTOS objects
+    msg_queue = xQueueCreate(QUEUE_LEN, sizeof(char));
+    btn_sem = xSemaphoreCreateBinary();
+
+    // Setup Interrupts (Rising Edge)
+    gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
+    gpio_set_irq_enabled_with_callback(SW2_PIN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
+
+    // Create Tasks
+    // Priorities: Sensor (2) > Print (1) to ensure input responsiveness
+    TaskHandle_t hSensorTask = NULL;
+    TaskHandle_t hPrintTask = NULL;
+
+    xTaskCreate(sensor_task, "Sensor", STACK_SIZE, NULL, 2, &hSensorTask);
+    xTaskCreate(print_task, "Print", STACK_SIZE, NULL, 1, &hPrintTask);
+
+    // Start Scheduler
+    printf("Starting Scheduler...\n");
     vTaskStartScheduler();
-    
-    // Never reach this line.
+
+    // Should never reach here
+    while(1);
     return 0;
 }
