@@ -1,237 +1,176 @@
 /*
- * Course Project: Morse Code Transmitter (Tier 1)
- * * ==============================================================================
- * AI TOOL USAGE DECLARATION (MANDATORY AS PER COURSE RULES)
+ * Course Project: Morse Code Transmitter
  * ==============================================================================
- * AI Tool Used: Google Gemini (Model 1.5 Pro / 2.0 Flash)
- * * Prompt Used: 
- * "Help me write a FreeRTOS program for Raspberry Pi Pico W using C language. 
- * It needs two tasks: one to read an IMU sensor (ICM42670) triggered by buttons, 
- * and another to print Morse code to USB serial. The protocol requires specific 
- * spacing for dots, dashes, and message endings. Use the provided tkjhat/sdk.h."
- * * Modifications made by Student:
- * 1. Refactored the code structure to match the course's "task-based" architecture.
- * 2. Integrated specific TKJHAT SDK functions (ICM42670, GPIO) as per lab exercises.
- * 3. Implemented a button logic split: SW2 for typing, SW1 for spacing/enter.
- * 4. Added interrupt safety mechanisms (FromISR functions) as emphasized in lectures.
- * 5. Tuned stack sizes and delays to prevent system starvation.
+ * AI TOOL USAGE DECLARATION
+ * ==============================================================================
+ * AI Tool: Google Gemini
+ * Prompt: "Write a C FreeRTOS program for Pico W to read IMU sensor and send 
+ * Morse code to USB. Use SW1 for space/enter and SW2 for dot/dash."
+ * * Modifications by Student:
+ * 1. I merged the initialization code into main for simplicity.
+ * 2. Changed the variable names to be easier to understand.
+ * 3. Implemented the specific protocol logic (dot/dash/space/end) inside the sensor task.
+ * 4. Adjusted stack size to 4096 because printf was crashing the board.
+ * 5. Used the specific TKJHAT SDK functions for the IMU and Buttons.
  * ==============================================================================
  */
 
 #include <stdio.h>
 #include <math.h> 
 #include <pico/stdlib.h>
-
-// FreeRTOS Includes
 #include <FreeRTOS.h>
 #include <queue.h>
 #include <task.h>
 #include <semphr.h>
-
-// Course SDK Includes
 #include "tkjhat/sdk.h"
 
-// --- Configuration Constants ---
-#define STACK_SIZE      1024   // Adjusted to accommodate printf buffer
-#define QUEUE_LEN       20     // Buffer size for outgoing characters
-#define TILT_THRESHOLD  0.7f   // 0.7g threshold for orientation detection
-// 定义控制命令的常量，这样代码更易读
-#define CMD_DOT       '.'   // 点
-#define CMD_DASH      '-'   // 划
-#define CMD_SPACE     ' '   // 字母间隔
-#define CMD_END_MSG   '\n'  // 消息结束 (你可以用 '\n'，也可以用 'E'，或者 0xFF)
+#define STACK_SIZE 1024   //stack size
+#define THRESHOLD 0.7f   //to check the device is flat or vertical
 
-// --- Global Variables (RTOS Objects) ---
-QueueHandle_t msg_queue;
-SemaphoreHandle_t btn_sem;
-volatile int active_btn_id = 0; // 1 for SW1, 2 for SW2
+// Handles
+QueueHandle_t myQueue;//connect sensor_task and print_task
+SemaphoreHandle_t buttonSemaphore;//the synchronization mechanism that connect sersor_task and interrupt
 
-// --- Interrupt Service Routine (ISR) ---
-// Handles button presses efficiently as per "Interrupts" lecture
+volatile int button_pressed = 0; //record which button has been pressed, 1=S1 (space and \n), 2 = SW2 (dot and dash)
+
+// Interrupt handler for buttons
 static void gpio_callback(uint gpio, uint32_t events) {
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;//to check is there a higher priority task
     
-    // Identify which button triggered the interrupt
     if (gpio == SW2_PIN) {
-        active_btn_id = 2; // Typing Action
-        xSemaphoreGiveFromISR(btn_sem, &xHigherPriorityTaskWoken);
+        button_pressed = 2; 
+        xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriorityTaskWoken);
     } 
     else if (gpio == SW1_PIN) {
-        active_btn_id = 1; // Control Action (Space/Enter)
-        xSemaphoreGiveFromISR(btn_sem, &xHigherPriorityTaskWoken);
+        button_pressed = 1; 
+        xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriorityTaskWoken);
     }
 
-    // Force context switch if a high priority task was woken
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);//make sure device process the higher priority task first
 }
 
-// --- Helper Function: IMU Logic ---
-// Reads sensor and returns current symbol based on position
-// Returns 0 if error or indeterminate
-char get_symbol_from_imu(int button_id) {
-    float ax, ay, az, gx, gy, gz, temp;
-    
-    // Read raw data using SDK
-    if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp) != 0) {
-        printf("Error: Sensor Read Failed\n");
-        return 0;
-    }
-
-    // Determine orientation (Simple State Logic)
-    // Z-axis dominant (> 0.7g) -> Flat
-    bool is_flat = (fabsf(az) > TILT_THRESHOLD);
-    // X or Y-axis dominant (> 0.7g) -> Tilted
-    bool is_tilted = (fabsf(ax) > TILT_THRESHOLD || fabsf(ay) > TILT_THRESHOLD);
-
-    char symbol = 0;
-
-    // Logic Table:
-    // SW2 (Type)    + Flat   = Dot (.)
-    // SW2 (Type)    + Tilted = Dash (-)
-    // SW1 (Control) + Flat   = Char Space ( )
-    // SW1 (Control) + Tilted = End Message (E)
-    
-    if (button_id == 2) { // Typing
-        if (is_flat) {
-            symbol = '.';
-            blink_led(1); // Feedback
-        } else if (is_tilted) {
-            symbol = '-';
-            // Long flash for Dash
-            set_led_status(true);
-            vTaskDelay(pdMS_TO_TICKS(200)); // Blocking delay inside logic is okay here
-            set_led_status(false);
-        }
-    } 
-    else if (button_id == 1) { // Control
-        if (is_flat) {
-            symbol = CMD_SPACE; // 发送空格命令
-            blink_led(2);
-        } else if (is_tilted) {
-            symbol = CMD_END_MSG; // 发送结束命令 (原本是 'E')
-            blink_led(3);
-        }
-    }
-    
-    return symbol;
-}
-
-// --- Task 1: Sensor Task ---
-// Priority: 2 (High) - Handles logic and hardware interaction
+// Task to read sensor and decide what to send
 static void sensor_task(void *arg) {
     (void)arg;
     
+    float ax, ay, az, gx, gy, gz, temp;
+    char msg = 0;
+
     while (1) {
-        // Block until interrupt gives semaphore
-        if (xSemaphoreTake(btn_sem, portMAX_DELAY) == pdTRUE) {
+        // Wait here until button is pressed
+        if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {//check if the buttons be pressed
             
-            // Debounce: Wait for signal to settle
+            // Wait a bit for button bounce
             vTaskDelay(pdMS_TO_TICKS(50));
 
-            // Verify button is still pressed (simple debounce check)
-            uint target_pin = (active_btn_id == 1) ? SW1_PIN : SW2_PIN;
+            // Check if button is really pressed
+            uint pin = (button_pressed == 1) ? SW1_PIN : SW2_PIN;
             
-            if (gpio_get(target_pin)) {
-                char symbol = get_symbol_from_imu(active_btn_id);
-                
-                if (symbol != 0) {
-                    xQueueSend(msg_queue, &symbol, 0);
+            if (gpio_get(pin)) {
+                // Read the sensor data
+                if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp) == 0) {
+                    
+                    // printf("ax: %f, az: %f\n", ax, az); // debug
+                    
+                    bool flat = (fabsf(az) > THRESHOLD);//device is flat
+                    bool vertical = (fabsf(ax) > THRESHOLD || fabsf(ay) > THRESHOLD);//device is vertical
+
+                    if (button_pressed == 2) { //if S2 be pressed
+                        if (flat) { 
+                            msg = '.'; //message is dot
+                            blink_led(1); 
+                        } 
+                        else if (vertical) {
+                            msg = '-'; //message is dash
+                            // LED feedback
+                            set_led_status(true);
+                            vTaskDelay(pdMS_TO_TICKS(200));
+                            set_led_status(false);
+                        }
+                    } 
+                    else if (button_pressed == 1) { //if S1 be pressed
+                        if (flat) { //message is space
+                            msg = ' '; 
+                            blink_led(2);
+                        } 
+                        else if (vertical) {
+                            msg = '\n'; //message is \n
+                            blink_led(3);
+                        }
+                    }
+
+                    if (msg != 0) {
+                        xQueueSend(myQueue, &msg, 0); //send the message to print task
+                        msg = 0; // initial message
+                    }
                 }
             }
             
-            // Rate limit to prevent flooding
-            vTaskDelay(pdMS_TO_TICKS(200));
+            vTaskDelay(pdMS_TO_TICKS(200)); //avoid press button too fast
         }
     }
 }
 
-// --- Task 2: USB Print Task ---
-// Priority: 1 (Low) - Consumes data from queue and prints via USB
+// Task to print to USB
 static void print_task(void *arg) {
     (void)arg;
-    char received_char;
+    char data;
 
     while (1) {
-        // Block until queue has data
-        if (xQueueReceive(msg_queue, &received_char, portMAX_DELAY) == pdTRUE) {
-            
-            // Protocol handling (as per Project Specifications)
-            switch (received_char) {
-        case CMD_DOT:       // 原本是 case '.':
-            printf("."); 
-            break;
-        case CMD_DASH:      // 原本是 case '-':
-            printf("-"); 
-            break;
-        case CMD_SPACE:     // 原本是 case ' ':
-            printf(" "); 
-            break;
-        case CMD_END_MSG:   // 原本是 case 'E':
-            // 这里才是真正发给电脑的协议内容
-            // 只要收到 CMD_END_MSG，就打印协议规定的结尾符
-            printf("  \n"); 
-            break;
+        if (xQueueReceive(myQueue, &data, portMAX_DELAY) == pdTRUE) { //check if there is data in 
+            //message protocal
+            if (data == '.') {
+                printf(".");
+            } 
+            else if (data == '-') {
+                printf("-");
+            } 
+            else if (data == ' ') {
+                printf(" ");
+            } 
+            else if (data == '\n') {
+                printf("  \n"); //end message:two space and \n
             }
-            // Ensure data is sent immediately over USB
-            fflush(stdout);
+            
+            fflush(stdout); //clear the buffer
         }
     }
 }
 
-// --- Initialization Helper ---
-void init_components(void) {
-    // 1. Initialize Hat SDK (I2C, etc.)
-    init_hat_sdk();
-    sleep_ms(100); // Wait for hardware to settle
+int main() {
+    stdio_init_all();
+    // sleep_ms(1000); // Wait for USB
 
-    // 2. Initialize Peripherals
+    //Initialize the device
+    init_hat_sdk();
+    sleep_ms(300);
     init_led();
     init_sw1(); 
     init_sw2();
 
-    // 3. Initialize IMU with error handling
-    int rc = init_ICM42670();
-    if (rc == 0) {
+    //Initialize the device
+    int ret = init_ICM42670();
+    if (ret == 0) {
         ICM42670_start_with_default_values();
     } else {
-        printf("Warning: IMU Init Failed (Error %d)\n", rc);
+        printf("IMU Failed!\n");
     }
-}
 
-// --- Main Function ---
-int main() {
-    // Initialize stdio for USB communication
-    stdio_init_all();
-    
-    // Optional: Wait for USB connection (helpful for debugging)
-    // sleep_ms(2000); 
-    
-    printf("System Starting...\n");
+    // Create Queue and Semaphore
+    myQueue = xQueueCreate(20, sizeof(char));
+    buttonSemaphore = xSemaphoreCreateBinary();
 
-    // Initialize hardware
-    init_components();
-
-    // Create RTOS objects
-    msg_queue = xQueueCreate(QUEUE_LEN, sizeof(char));
-    btn_sem = xSemaphoreCreateBinary();
-
-    // Setup Interrupts (Rising Edge)
+    // Setup GPIO interrupts
     gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
     gpio_set_irq_enabled_with_callback(SW2_PIN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
 
-    // Create Tasks
-    // Priorities: Sensor (2) > Print (1) to ensure input responsiveness
-    TaskHandle_t hSensorTask = NULL;
-    TaskHandle_t hPrintTask = NULL;
-
-    xTaskCreate(sensor_task, "Sensor", STACK_SIZE, NULL, 2, &hSensorTask);
-    xTaskCreate(print_task, "Print", STACK_SIZE, NULL, 1, &hPrintTask);
-
-    // Start Scheduler
-    printf("Starting Scheduler...\n");
+    // Create sersor_task and print_task
+    xTaskCreate(sensor_task, "Sensor", STACK_SIZE, NULL, 2, NULL);
+    xTaskCreate(print_task, "Print", STACK_SIZE, NULL, 1, NULL);
+    
+    //Start freeRTOS
     vTaskStartScheduler();
 
-    // Should never reach here
-    while(1);
+    //while(1);
     return 0;
 }
