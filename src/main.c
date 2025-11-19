@@ -27,23 +27,35 @@
 #define STACK_SIZE 1024   //stack size
 #define THRESHOLD 0.7f   //to check the device is flat or vertical
 
+// --- State Machine Definition (Based on Course Material) ---
+// Introducing state as per lecture example
+enum state { IDLE=1, TYPING, CONTROL };
+
+// Global state variable, initialized to waiting state
+//volatile 
+enum state myState = IDLE;
+
 // Handles
 QueueHandle_t myQueue;//connect sensor_task and print_task
 SemaphoreHandle_t buttonSemaphore;//the synchronization mechanism that connect sersor_task and interrupt
 
-volatile int button_pressed = 0; //record which button has been pressed, 1=S1 (space and \n), 2 = SW2 (dot and dash)
-
 // Interrupt handler for buttons
-static void gpio_callback(uint gpio, uint32_t events) {
+static void btn_fxn(uint gpio, uint32_t events) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;//to check is there a higher priority task
     
-    if (gpio == SW2_PIN) {
-        button_pressed = 2; 
-        xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriorityTaskWoken);
-    } 
-    else if (gpio == SW1_PIN) {
-        button_pressed = 1; 
-        xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriorityTaskWoken);
+    // We change the state to a desired one
+    // If-clause is used to check that the state transition is possible (Legality Check)
+    if (myState == IDLE) {
+        if (gpio == SW2_PIN) {
+            // State transition IDLE -> TYPING (SW2 pressed)
+            myState = TYPING;
+            xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriorityTaskWoken);
+        } 
+        else if (gpio == SW1_PIN) {
+            // State transition IDLE -> CONTROL (SW1 pressed)
+            myState = CONTROL;
+            xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriorityTaskWoken);
+        }
     }
 
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);//make sure device process the higher priority task first
@@ -53,29 +65,48 @@ static void gpio_callback(uint gpio, uint32_t events) {
 static void sensor_task(void *arg) {
     (void)arg;
     
+    //Initialize the device
+    init_hat_sdk();
+    sleep_ms(300);
+    init_led();
+    init_sw1(); 
+    init_sw2();
+
+    int ret = init_ICM42670();
+    if (ret == 0) {
+        ICM42670_start_with_default_values();
+    } else {
+        printf("IMU Failed!\n");
+    }
+
+    // Setup GPIO interrupts
+    gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
+    gpio_set_irq_enabled_with_callback(SW2_PIN, GPIO_IRQ_EDGE_RISE, true, btn_fxn);
+
     float ax, ay, az, gx, gy, gz, temp;
     char msg = 0;
 
     while (1) {
         // Wait here until button is pressed
-        if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {//check if the buttons be pressed
+        if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {   //check if the buttons be pressed
             
             // Wait a bit for button bounce
             vTaskDelay(pdMS_TO_TICKS(50));
 
-            // Check if button is really pressed
-            uint pin = (button_pressed == 1) ? SW1_PIN : SW2_PIN;
+            // Check which pin to read based on current state
+            //uint pin = (myState == CONTROL) ? SW1_PIN : SW2_PIN;
             
-            if (gpio_get(pin)) {
+            //if (gpio_get(pin)) {
                 // Read the sensor data
                 if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp) == 0) {
                     
-                    // printf("ax: %f, az: %f\n", ax, az); // debug
+                    //printf("ax: %f, az: %f\n", ax, az); // debug
                     
                     bool flat = (fabsf(az) > THRESHOLD);//device is flat
                     bool vertical = (fabsf(ax) > THRESHOLD || fabsf(ay) > THRESHOLD);//device is vertical
 
-                    if (button_pressed == 2) { //if S2 be pressed
+                    // State Machine Logic
+                    if (myState == TYPING) { // Functionality of TYPING state
                         if (flat) { 
                             msg = '.'; //message is dot
                             blink_led(1); 
@@ -83,27 +114,32 @@ static void sensor_task(void *arg) {
                         else if (vertical) {
                             msg = '-'; //message is dash
                             // LED feedback
-                            set_led_status(true);
-                            vTaskDelay(pdMS_TO_TICKS(200));
-                            set_led_status(false);
+                            blink_led(2);
                         }
+                        // State transition TYPING -> IDLE
+                        myState = IDLE;
                     } 
-                    else if (button_pressed == 1) { //if S1 be pressed
+                    else if (myState == CONTROL) { // Functionality of CONTROL state
                         if (flat) { //message is space
                             msg = ' '; 
-                            blink_led(2);
+                            blink_led(3);
                         } 
                         else if (vertical) {
                             msg = '\n'; //message is \n
-                            blink_led(3);
+                            blink_led(4);
                         }
+                        myState = IDLE;
                     }
 
                     if (msg != 0) {
                         xQueueSend(myQueue, &msg, 0); //send the message to print task
-                        msg = 0; // initial message
+                        msg = 0; // initialize message
                     }
                 }
+            //}
+            else {
+                // If button was released too fast or bounce, return to IDLE
+                myState = IDLE;
             }
             
             vTaskDelay(pdMS_TO_TICKS(200)); //avoid press button too fast
@@ -141,28 +177,11 @@ int main() {
     stdio_init_all();
     // sleep_ms(1000); // Wait for USB
 
-    //Initialize the device
-    init_hat_sdk();
-    sleep_ms(300);
-    init_led();
-    init_sw1(); 
-    init_sw2();
-
-    //Initialize the device
-    int ret = init_ICM42670();
-    if (ret == 0) {
-        ICM42670_start_with_default_values();
-    } else {
-        printf("IMU Failed!\n");
-    }
+    
 
     // Create Queue and Semaphore
     myQueue = xQueueCreate(20, sizeof(char));
     buttonSemaphore = xSemaphoreCreateBinary();
-
-    // Setup GPIO interrupts
-    gpio_set_irq_enabled_with_callback(SW1_PIN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
-    gpio_set_irq_enabled_with_callback(SW2_PIN, GPIO_IRQ_EDGE_RISE, true, &gpio_callback);
 
     // Create sersor_task and print_task
     xTaskCreate(sensor_task, "Sensor", STACK_SIZE, NULL, 2, NULL);
