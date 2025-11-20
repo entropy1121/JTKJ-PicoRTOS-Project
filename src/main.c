@@ -163,7 +163,7 @@ static void print_task(void *arg) {
                 printf("  \n"); //end message:two space and \n
             }
             
-            fflush(stdout); //clear the buffer
+            
         }
     }
 }
