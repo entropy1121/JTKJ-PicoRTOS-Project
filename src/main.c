@@ -148,7 +148,7 @@ static void print_task(void *arg) {
     char data;
 
     while (1) {
-        if (xQueueReceive(myQueue, &data, portMAX_DELAY) == pdTRUE) { //check if there is data in 
+        if (xQueueReceive(myQueue, &data, portMAX_DELAY) == pdTRUE) { //check if there is data in queue
             //message protocal
             if (data == '.') {
                 printf(".");
