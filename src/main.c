@@ -78,12 +78,8 @@ static void sensor_task(void *arg) {
     char msg = 0;
 
     while (1) {
-        // Wait here until button is pressed
         if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {   //check if the buttons be pressed
-            
-            // Wait a bit for button bounce
-            //vTaskDelay(pdMS_TO_TICKS(50));
-
+                //read the sensor data
                 if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp) == 0) {
                     
                     bool flat = (fabsf(az) > THRESHOLD);                              //device is flat
@@ -102,8 +98,8 @@ static void sensor_task(void *arg) {
                         myState = IDLE;
                     } 
                     else if (myState == CONTROL) {// Functionality of CONTROL state
-                        if (flat) {               //message is space
-                            msg = ' '; 
+                        if (flat) {        
+                            msg = ' ';            //message is space
                             blink_led(3);         //led blink three time
                         } 
                         else if (vertical) {
@@ -115,10 +111,11 @@ static void sensor_task(void *arg) {
 
                     if (msg != 0) {
                         xQueueSend(myQueue, &msg, 0); //send the message to print task
-                        msg = 0;                      // initialize message
+                        msg = 0;                      //initialize message
                     }
                 }
-            // If anything un
+                
+            // If anything unexpeced happen,initialize myState to make sure the program can continue
             else {
                 myState = IDLE;
             }
