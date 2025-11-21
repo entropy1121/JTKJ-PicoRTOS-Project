@@ -1,3 +1,4 @@
+
 /*
    use of AI:
    1.AI tool:gemini
@@ -114,7 +115,7 @@ static void sensor_task(void *arg) {
                         msg = 0;                      //initialize message
                     }
                 }
-                
+
             // If anything unexpeced happen,initialize myState to make sure the program can continue
             else {
                 myState = IDLE;
@@ -154,22 +155,26 @@ static void print_task(void *arg) {
 int main() {
     stdio_init_all();
 
-    // Create Queue and Semaphore
+    //Create Queue and Semaphore
     myQueue = xQueueCreate(20, sizeof(char));
     buttonSemaphore = xSemaphoreCreateBinary();
     
-     TaskHandle_t hSensorTask, hPrintTask = NULL;
+    //Create handles for tasks
+    TaskHandle_t hSensorTask, hPrintTask = NULL;
 
-    // Create sersor_task and print_task
+    //Create sersor_task
     BaseType_t result = xTaskCreate(sensor_task, "sensor", STACK_SIZE, NULL, 2, &hSensorTask);
     
+    //If error happen
     if(result != pdPASS) {
         printf("Sensor Task creation failed\n");
         return 0;
     }
 
+    //Create print_task
     result = xTaskCreate(print_task, "print", STACK_SIZE, NULL, 1, &hPrintTask);
     
+    //If error happen
     if(result != pdPASS) {
         printf("Print Task creation failed\n");
         return 0;
