@@ -1,4 +1,3 @@
-
 /*
    use of AI:
    1.AI tool:gemini
@@ -24,19 +23,19 @@
 #include "tkjhat/sdk.h"
 
 #define STACK_SIZE 1024   //stack size
-#define THRESHOLD 0.7f   //to check the device is flat or vertical
+#define THRESHOLD 0.7f    //to check the device is flat or vertical
 
 enum state { IDLE=1, TYPING, CONTROL };//TYPING mode is for dot and dash, control mode is for space and new line
 
 
-enum state myState = IDLE;//initialize state as IDLE
+enum state myState = IDLE;             //initialize state as IDLE
 
-QueueHandle_t myQueue;//connect sensor_task and print_task
-SemaphoreHandle_t buttonSemaphore;//the synchronization mechanism that connect sersor_task and interrupt
+QueueHandle_t myQueue;                 //connect sensor_task and print_task
+SemaphoreHandle_t buttonSemaphore;     //the synchronization mechanism that connect sersor_task and interrupt
 
 // Interrupt handler for buttons
 static void btn_fxn(uint gpio, uint32_t events) {
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;//to check is there a higher priority task
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE; //to check is there a higher priority task
     
     if (myState == IDLE) {
         if (gpio == SW2_PIN) {
