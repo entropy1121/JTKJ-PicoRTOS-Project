@@ -63,6 +63,7 @@ static void btn_fxn(uint gpio, uint32_t events) {
             xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriority);
         }
     }
+    portYIELD_FROM_ISR(xHigherPriority);//change to higher priority task
 }
 
 // Task to read sensor and decide the content of message
@@ -103,6 +104,7 @@ static void sensor_task(void *arg) {
                     bool vertical = (fabsf(ax) > THRESHOLD || fabsf(ay) > THRESHOLD); //device is vertical
 
                     // State Machine Logic
+                    // there is different led blink time for different message, so we have visible message from device
                     if (myState == TYPING) {      // Functionality of TYPING state
                         if (flat) { 
                             msg = '.';            //message is dot
@@ -137,7 +139,7 @@ static void sensor_task(void *arg) {
                 myState = IDLE;
             }
             
-            vTaskDelay(pdMS_TO_TICKS(1000)); //avoid press button too fast
+            vTaskDelay(pdMS_TO_TICKS(1000)); 
         }
     }
 }
@@ -163,7 +165,7 @@ static void print_task(void *arg) {
                 printf("\n"); 
             }
             
-            vTaskDelay(pdMS_TO_TICKS(1000)); 
+            vTaskDelay(pdMS_TO_TICKS(1000));
         }
     }
 }
