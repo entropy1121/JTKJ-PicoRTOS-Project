@@ -105,23 +105,23 @@ static void sensor_task(void *arg) {
 
                     // State Machine Logic
                     // there is different led blink time for different message, so we have visible message from device
-                    if (myState == TYPING) {      // Functionality of TYPING state
-                        if (flat) { 
+                    if (myState == TYPING) {      //Functionality of TYPING state
+                        if (flat) {               //If the device is flat
                             msg = '.';            //message is dot
                             blink_led(1);         //led blink once
                         } 
-                        else if (vertical) {
+                        else if (vertical) {      //If the device is vertical
                             msg = '-';            //message is dash
                             blink_led(2);         //led blink twice
                         }
                         myState = IDLE;
                     } 
-                    else if (myState == CONTROL) {// Functionality of CONTROL state
-                        if (flat) {        
+                    else if (myState == CONTROL) {//Functionality of CONTROL state
+                        if (flat) {               //If the device is flat
                             msg = ' ';            //message is space
                             blink_led(3);         //led blink three time
                         } 
-                        else if (vertical) {
+                        else if (vertical) {      //If the device is vertical
                             msg = '\n';           //message is \n
                             blink_led(4);         //led blink four time
                         }
