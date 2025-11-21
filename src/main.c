@@ -1,4 +1,14 @@
 /*
+   We want to divide 6 points like this:
+   Ziteng: 3 points
+   Xiaoya: 1.5 points
+   Qihao:  1.5 points
+
+   Group members:
+        Qihao Zhao: write the interrupt, test the threshold to check the position of the device
+        Xiaoya Gao: write print_task, joint the videos together, test the result
+        Ziteng Zhao: write sensor_task, intergrate and debug the whole program, modify the sdk.c and Cmakelist
+
    use of AI:
    1.AI tool:gemini
      prompt:how to check device is flat or vertical
@@ -6,11 +16,17 @@
                     I add logic to connect dot and dash to the position of device in the loop.
                     I use ICM42670_read_sensor_data function to read the sensor data.
    2.AI tool:gemini
-     prompt:How to use state machine to process button
-     how to modify:I add logic of button 1 and 2 to change the state
-                   I use xSemaphoreGiveFromISR to synchronize interrupt and tasks.
+     prompt:How to use state machine to process interrupt of button
+     how to modify:I implemented myState
+                   I added logic of button 1 and 2 to change the state
+                   I used xSemaphoreGiveFromISR to send semaphore to sensor task
    3.AI tool:deepseek
-     prompt:
+     prompt:How to synchronize interrupt and FreeRTOS task
+     how to modify:I include semphr.h
+                   I create buttonSemaphore then use xSemaphoreTake receive semaphore from interrupt
+   4.AI tool:gemini
+     prompt:how to avoid unexpected message because of too fast action
+     how to modify:I use vTaskDelay(pdMS_TO_TICKS(150)) in sensor_task
 */
 
 #include <stdio.h>
@@ -23,11 +39,9 @@
 #include "tkjhat/sdk.h"
 
 #define STACK_SIZE 1024   //stack size
-#define THRESHOLD 0.7f    //to check the device is flat or vertical
+#define THRESHOLD 0.7    //to check the device is flat or vertical
 
-enum state { IDLE=1, TYPING, CONTROL };//TYPING mode is for dot and dash, control mode is for space and new line
-
-
+enum state { IDLE=1, TYPING, CONTROL };//TYPING mode is for dot and dash, control mode is for space and new li
 enum state myState = IDLE;             //initialize state as IDLE
 
 QueueHandle_t myQueue;                 //connect sensor_task and print_task
@@ -35,23 +49,23 @@ SemaphoreHandle_t buttonSemaphore;     //the synchronization mechanism that conn
 
 // Interrupt handler for buttons
 static void btn_fxn(uint gpio, uint32_t events) {
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE; //to check is there a higher priority task
+    BaseType_t xHigherPriority = pdFALSE; //to check is there a higher priority task
     
     if (myState == IDLE) {
         if (gpio == SW2_PIN) {
             // when we press button2 the state change to TYPING
             myState = TYPING;
-            xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriorityTaskWoken);
+            xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriority);
         } 
         else if (gpio == SW1_PIN) {
             // when we press button1 the state change to CONTROL
             myState = CONTROL;
-            xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriorityTaskWoken);
+            xSemaphoreGiveFromISR(buttonSemaphore, &xHigherPriority);
         }
     }
 }
 
-// Task to read sensor and decide what to send
+// Task to read sensor and decide the content of message
 static void sensor_task(void *arg) {
     (void)arg;
     
@@ -79,6 +93,9 @@ static void sensor_task(void *arg) {
 
     while (1) {
         if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {   //check if the buttons be pressed
+
+            vTaskDelay(pdMS_TO_TICKS(150));//avoid unexpected message because of too fast action
+
                 //read the sensor data
                 if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp) == 0) {
                     
@@ -125,7 +142,7 @@ static void sensor_task(void *arg) {
     }
 }
 
-// Task to translate the message by protocal then print the message
+// Task to translate the message by protocal then print the message to USB
 static void print_task(void *arg) {
     (void)arg;
     char data;
