@@ -100,8 +100,8 @@ static void sensor_task(void *arg) {
                 //read the sensor data
                 if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp) == 0) {
                     
-                    bool flat = (fabsf(az) > THRESHOLD);                              //If the acceleration on z axis over 0.7, device is flat
-                    bool vertical = (fabsf(ax) > THRESHOLD || fabsf(ay) > THRESHOLD); //If the acceleration on x or y axis over 0.7, device is vertical
+                    bool flat = (fabs(az) > THRESHOLD);                              //If the acceleration on z axis over 0.7, device is flat
+                    bool vertical = (fabs(ax) > THRESHOLD || fabs(ay) > THRESHOLD); //If the acceleration on x or y axis over 0.7, device is vertical
 
                     // State Machine Logic
                     // there is different led blink time for different message, so we have visible message from device
