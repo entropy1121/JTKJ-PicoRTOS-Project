@@ -6,8 +6,8 @@
 
    Group members:
         Qihao Zhao: write the interrupt, test the threshold to check the position of the device
-        Xiaoya Gao: write print_task, joint the videos together, test the result
-        Ziteng Zhao: write sensor_task, intergrate and debug the whole program, modify the sdk.c and Cmakelist
+        Xiaoya Gao: write print_task, joint the videos together, test the morse code sending
+        Ziteng Zhao: write sensor_task, integrate and debug the whole program, modify the sdk.c and Cmakelist
 
    use of AI:
    1.AI tool:gemini
@@ -100,8 +100,8 @@ static void sensor_task(void *arg) {
                 //read the sensor data
                 if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp) == 0) {
                     
-                    bool flat = (fabsf(az) > THRESHOLD);                              //device is flat
-                    bool vertical = (fabsf(ax) > THRESHOLD || fabsf(ay) > THRESHOLD); //device is vertical
+                    bool flat = (fabsf(az) > THRESHOLD);                              //If the acceleration on z axis over 0.7, device is flat
+                    bool vertical = (fabsf(ax) > THRESHOLD || fabsf(ay) > THRESHOLD); //If the acceleration on x or y axis over 0.7, device is vertical
 
                     // State Machine Logic
                     // there is different led blink time for different message, so we have visible message from device
