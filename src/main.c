@@ -12,7 +12,7 @@
    use of AI:
    1.AI tool:gemini
      prompt:how to check device is flat or vertical
-     how to modify: I test the device and changed the threshold of flat or vertical position to 0.7.
+     how to modify: I use 2 bool type of variable in sensor_task to check if the device go beyond or not of the threshold
                     I add logic to connect dot and dash to the position of device in the loop.
                     I use ICM42670_read_sensor_data function to read the sensor data.
    2.AI tool:gemini
