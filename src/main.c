@@ -7,7 +7,7 @@
    Group members:
         Qihao Zhao: write the interrupt, test the threshold to check the position of the device
         Xiaoya Gao: write print_task, joint the videos together, test the morse code sending
-        Ziteng Zhao: write sensor_task, integrate and debug the whole program, modify the sdk.c
+        Ziteng Zhao: write sensor_task, integrate and debug the whole program, modify the sdk.c, build the synchronization from sensortask to interrupt and printtask
 
    use of AI:
    1.AI tool:gemini
