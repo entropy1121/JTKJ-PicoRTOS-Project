@@ -41,7 +41,7 @@
 #define STACK_SIZE 1024   //stack size
 #define THRESHOLD 0.7    //to check the device is flat or vertical
 
-enum state { IDLE=1, TYPING, CONTROL };//TYPING mode is for dot and dash, control mode is for space and new li
+enum state { IDLE=1, TYPING, CONTROL };//TYPING mode is for dot and dash, CONTROL mode is for space and new line
 enum state myState = IDLE;             //initialize state as IDLE
 
 QueueHandle_t myQueue;                 //connect sensor_task and print_task
