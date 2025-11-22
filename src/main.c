@@ -95,7 +95,7 @@ static void sensor_task(void *arg) {
     while (1) {
         if (xSemaphoreTake(buttonSemaphore, portMAX_DELAY) == pdTRUE) {   //check if the buttons be pressed
 
-            vTaskDelay(pdMS_TO_TICKS(150));//avoid unexpected message because of too fast action
+            vTaskDelay(pdMS_TO_TICKS(150));//reduce unexpected message because of too fast action
 
                 //read the sensor data
                 if (ICM42670_read_sensor_data(&ax, &ay, &az, &gx, &gy, &gz, &temp) == 0) {
