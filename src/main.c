@@ -6,7 +6,7 @@
 
    Group members:
         Qihao Zhao: write the interrupt
-        Xiaoya Gao: write print_task, joint the videos together
+        Xiaoya Gao: write print_task, joint the videos together, test the morse code
         Ziteng Zhao: write sensor_task, integrate and debug the whole program, test the threshold
 
    use of AI:
