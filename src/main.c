@@ -82,7 +82,7 @@ static void sensor_task(void *arg) {
     if (ret == 0) {
         ICM42670_start_with_default_values();
     } else {
-        printf("IMU innitialize fail");
+        printf("IMU initialize fail");
     }
 
     // Setup GPIO interrupts
