@@ -5,9 +5,9 @@
    Qihao:  1.5 points
 
    Group members:
-        Qihao Zhao: write the interrupt, modify the error in sdk.c
-        Xiaoya Gao: write print_task, joint the videos together, test the morse code sending
-        Ziteng Zhao: write sensor_task, integrate and debug the whole program, test the threshold to check the position of the device
+        Qihao Zhao: write the interrupt
+        Xiaoya Gao: write print_task, joint the videos together
+        Ziteng Zhao: write sensor_task, integrate and debug the whole program, test the threshold
 
    use of AI:
    1.AI tool:gemini
